@@ -96,16 +96,24 @@
 
   class LocationDenied extends Error {}
 
+  // Resolves with the promise's value, or with `fallback` after `ms` milliseconds.
+  const withTimeout = (p, ms, fallback) =>
+    Promise.race([p, new Promise((res) => setTimeout(() => res(fallback), ms))]);
+
   // Real GPS position (not a point picked on a map).
+  // Phones use Telegram's location feature; computers / Telegram Web use the browser's location.
   async function getLocation() {
-    const lm = supports("8.0") ? tg.LocationManager : null;
+    const isPhone = ["android", "ios"].includes(tg.platform);
+    const lm = isPhone && supports("8.0") ? tg.LocationManager : null;
     if (lm) {
-      await new Promise((res) => lm.init(res));
-      if (lm.isLocationAvailable) {
+      const inited = await withTimeout(new Promise((res) => lm.init(() => res(true))), 5000, false);
+      if (inited && lm.isLocationAvailable) {
         if (lm.isAccessRequested && !lm.isAccessGranted) throw new LocationDenied();
-        const loc = await new Promise((res) => lm.getLocation(res));
-        if (loc) return { lat: loc.latitude, lng: loc.longitude, accuracy: loc.horizontal_accuracy || 0 };
-        if (!lm.isAccessGranted) throw new LocationDenied();
+        const TIMEOUT = {};
+        const loc = await withTimeout(new Promise((res) => lm.getLocation(res)), 20000, TIMEOUT);
+        if (loc && loc !== TIMEOUT) return { lat: loc.latitude, lng: loc.longitude, accuracy: loc.horizontal_accuracy || 0 };
+        if (loc !== TIMEOUT && !lm.isAccessGranted) throw new LocationDenied();
+        // Timed out or no position: fall back to the browser's location below.
       }
     }
     if (!navigator.geolocation) throw new Error("unavailable");
