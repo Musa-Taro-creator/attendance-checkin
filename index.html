@@ -39,6 +39,9 @@
       text-align: center; letter-spacing: 1px; background: var(--card); color: var(--text); outline: none; }
     input:focus { border-color: var(--btn); }
     .err { color: #d93025; font-size: 14px; margin: 8px 0 0; }
+    .who { width: 100%; max-width: 320px; background: var(--card); border-radius: 12px; padding: 16px;
+      font-size: 18px; font-weight: 600; color: var(--text); margin: 4px 0 0; overflow-wrap: anywhere; }
+    #confirm { width: 100%; max-width: 320px; display: flex; flex-direction: column; align-items: center; }
   </style>
 </head>
 <body>
@@ -52,6 +55,11 @@
     <p id="iderr" class="err" hidden></p>
     <button type="submit">Continue</button>
   </form>
+  <div id="confirm" hidden>
+    <p id="who" class="who"></p>
+    <button id="yes" type="button">✅ Yes, that's me</button>
+    <button id="no" type="button" class="secondary">✏️ No, type again</button>
+  </div>
   <button id="retry" hidden>Try again</button>
   <button id="settings" hidden>Open location settings</button>
   <button id="close" class="secondary" hidden>Close</button>
@@ -83,6 +91,7 @@
     $("close").hidden = state === "loading";
     $("settings").hidden = true;
     $("idform").hidden = true;
+    $("confirm").hidden = true;
     if (state !== "loading" && tg.HapticFeedback) {
       tg.HapticFeedback.notificationOccurred(state === "bad" ? "error" : "success");
     }
@@ -150,7 +159,20 @@
     setTimeout(() => $("sid").focus(), 100);
   }
 
-  async function send(studentCode) {
+  let pendingCode = null;
+
+  // The server found the typed ID: show the name and let the student say "yes, that's me" before registering.
+  function askConfirm(title, msg, who) {
+    show("loading", title, msg);
+    const icon = $("icon");
+    icon.className = "icon";
+    icon.textContent = "🎓";
+    $("close").hidden = true;
+    $("who").textContent = who || "";
+    $("confirm").hidden = false;
+  }
+
+  async function send(studentCode, confirmId) {
     show("loading", studentCode ? "Checking your Student ID…" : "Checking you in…", "Please wait a few seconds.");
     try {
       const res = await fetch(API_URL, {
@@ -164,10 +186,15 @@
           deviceId: await getDeviceId(),
           platform: tg.platform || "",
           ...(studentCode ? { studentCode } : {}),
+          ...(confirmId ? { confirmId: true } : {}),
         }),
       });
       const r = await res.json();
       if (r.code === "need_id") return askStudentId(r.title, r.message);
+      if (r.code === "confirm_id") {
+        pendingCode = studentCode;
+        return askConfirm(r.title, r.message, r.name);
+      }
       if (r.code === "id_not_found") return askStudentId("Type your Student ID", "", r.message);
       const state = !r.ok ? "bad" : r.code === "late" ? "late" : "ok";
       show(state, r.title, r.message, r.name);
@@ -211,6 +238,11 @@
     send(code);
   };
   $("sid").oninput = () => { $("iderr").hidden = true; };
+  $("yes").onclick = () => send(pendingCode, true);
+  $("no").onclick = () => {
+    $("sid").value = "";
+    askStudentId("Type your Student ID", "Type it again carefully.");
+  };
   $("retry").onclick = run;
   $("close").onclick = () => tg.close();
   $("settings").onclick = () => tg.LocationManager.openSettings();
