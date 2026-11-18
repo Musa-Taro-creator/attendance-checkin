@@ -34,6 +34,11 @@
       border-top-color: var(--btn); animation: spin 0.9s linear infinite; }
     @keyframes spin { to { transform: rotate(360deg); } }
     [hidden] { display: none !important; }
+    form { width: 100%; max-width: 320px; display: flex; flex-direction: column; align-items: center; }
+    input { width: 100%; border: 1px solid var(--hint); border-radius: 12px; padding: 14px; font-size: 18px;
+      text-align: center; letter-spacing: 1px; background: var(--card); color: var(--text); outline: none; }
+    input:focus { border-color: var(--btn); }
+    .err { color: #d93025; font-size: 14px; margin: 8px 0 0; }
   </style>
 </head>
 <body>
@@ -42,6 +47,11 @@
   <h1 id="title">Checking your location…</h1>
   <p id="name" class="name" hidden></p>
   <p id="msg" class="msg">Please wait a few seconds.</p>
+  <form id="idform" hidden>
+    <input id="sid" type="text" placeholder="Student ID, e.g. D20243724" autocomplete="off" autocapitalize="characters" spellcheck="false">
+    <p id="iderr" class="err" hidden></p>
+    <button type="submit">Continue</button>
+  </form>
   <button id="retry" hidden>Try again</button>
   <button id="settings" hidden>Open location settings</button>
   <button id="close" class="secondary" hidden>Close</button>
@@ -72,6 +82,7 @@
     $("retry").hidden = !(state === "bad");
     $("close").hidden = state === "loading";
     $("settings").hidden = true;
+    $("idform").hidden = true;
     if (state !== "loading" && tg.HapticFeedback) {
       tg.HapticFeedback.notificationOccurred(state === "bad" ? "error" : "success");
     }
@@ -124,6 +135,50 @@
     ));
   }
 
+  let lastLoc = null;
+
+  // First time: the student types their Student ID once, so the bot knows who they are.
+  function askStudentId(title, msg, error) {
+    show("loading", title, msg);
+    const icon = $("icon");
+    icon.className = "icon";
+    icon.textContent = "🎓";
+    $("close").hidden = false;
+    $("idform").hidden = false;
+    $("iderr").hidden = !error;
+    $("iderr").textContent = error || "";
+    setTimeout(() => $("sid").focus(), 100);
+  }
+
+  async function send(studentCode) {
+    show("loading", studentCode ? "Checking your Student ID…" : "Checking you in…", "Please wait a few seconds.");
+    try {
+      const res = await fetch(API_URL, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          initData: tg.initData,
+          lat: lastLoc.lat,
+          lng: lastLoc.lng,
+          accuracy: lastLoc.accuracy,
+          deviceId: await getDeviceId(),
+          platform: tg.platform || "",
+          ...(studentCode ? { studentCode } : {}),
+        }),
+      });
+      const r = await res.json();
+      if (r.code === "need_id") return askStudentId(r.title, r.message);
+      if (r.code === "id_not_found") return askStudentId("Type your Student ID", "", r.message);
+      const state = !r.ok ? "bad" : r.code === "late" ? "late" : "ok";
+      show(state, r.title, r.message, r.name);
+      if (state === "bad" && ["closed", "taken", "id_taken", "device_taken", "no_session"].includes(r.code)) {
+        $("retry").hidden = true;
+      }
+    } catch (e) {
+      show("bad", "No connection", "Check your internet, then tap Try again.");
+    }
+  }
+
   async function run() {
     show("loading", "Checking your location…", "Please wait a few seconds.");
     if (!tg.initData) {
@@ -131,9 +186,8 @@
       $("retry").hidden = true;
       return;
     }
-    let loc;
     try {
-      loc = await getLocation();
+      lastLoc = await getLocation();
     } catch (e) {
       if (e instanceof LocationDenied) {
         show("bad", "Location is off", "Allow location for Telegram, then tap Try again.");
@@ -143,30 +197,20 @@
       }
       return;
     }
-    try {
-      const res = await fetch(API_URL, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          initData: tg.initData,
-          lat: loc.lat,
-          lng: loc.lng,
-          accuracy: loc.accuracy,
-          deviceId: await getDeviceId(),
-          platform: tg.platform || "",
-        }),
-      });
-      const r = await res.json();
-      const state = !r.ok ? "bad" : r.code === "late" ? "late" : "ok";
-      show(state, r.title, r.message, r.name);
-      if (state === "bad" && ["closed", "not_listed", "no_username", "taken", "device_taken", "no_session"].includes(r.code)) {
-        $("retry").hidden = true;
-      }
-    } catch (e) {
-      show("bad", "No connection", "Check your internet, then tap Try again.");
-    }
+    await send(null);
   }
 
+  $("idform").onsubmit = (e) => {
+    e.preventDefault();
+    const code = $("sid").value.trim().replace(/\s+/g, "");
+    if (!code) {
+      $("iderr").hidden = false;
+      $("iderr").textContent = "Type your Student ID first.";
+      return;
+    }
+    send(code);
+  };
+  $("sid").oninput = () => { $("iderr").hidden = true; };
   $("retry").onclick = run;
   $("close").onclick = () => tg.close();
   $("settings").onclick = () => tg.LocationManager.openSettings();
