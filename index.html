@@ -55,6 +55,11 @@
     <p id="iderr" class="err" hidden></p>
     <button type="submit">Continue</button>
   </form>
+  <form id="codeform" hidden>
+    <input id="jcode" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="4" placeholder="4-digit code" autocomplete="off">
+    <p id="codeerr" class="err" hidden></p>
+    <button type="submit">Check in</button>
+  </form>
   <div id="confirm" hidden>
     <p id="who" class="who"></p>
     <button id="yes" type="button">✅ Yes, that's me</button>
@@ -91,6 +96,7 @@
     $("close").hidden = state === "loading";
     $("settings").hidden = true;
     $("idform").hidden = true;
+    $("codeform").hidden = true;
     $("confirm").hidden = true;
     if (state !== "loading" && tg.HapticFeedback) {
       tg.HapticFeedback.notificationOccurred(state === "bad" ? "error" : "success");
@@ -160,6 +166,38 @@
   }
 
   let pendingCode = null;
+  let joinCode = null; // the 4-digit code of an online class
+
+  // Online class with a code: the student types the code said in the online meeting.
+  function askJoinCode(title, msg, error) {
+    show("loading", title, msg);
+    const icon = $("icon");
+    icon.className = "icon";
+    icon.textContent = "🔢";
+    $("close").hidden = false;
+    $("codeform").hidden = false;
+    $("codeerr").hidden = !error;
+    $("codeerr").textContent = error || "";
+    $("jcode").value = "";
+    setTimeout(() => $("jcode").focus(), 100);
+  }
+
+  // Classroom classes need GPS. Returns false (and shows the problem) when there is no location.
+  async function locate() {
+    show("loading", "Checking your location…", "Please wait a few seconds.");
+    try {
+      lastLoc = await getLocation();
+      return true;
+    } catch (e) {
+      if (e instanceof LocationDenied) {
+        show("bad", "Location is off", "Allow location for Telegram, then tap Try again.");
+        if (supports("8.0") && tg.LocationManager) $("settings").hidden = false;
+      } else {
+        show("bad", "Couldn't get your location", "Turn on GPS / location on your phone, then tap Try again.");
+      }
+      return false;
+    }
+  }
 
   // The server found the typed ID: show the name and let the student say "yes, that's me" before registering.
   function askConfirm(title, msg, who) {
@@ -180,9 +218,8 @@
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           initData: tg.initData,
-          lat: lastLoc.lat,
-          lng: lastLoc.lng,
-          accuracy: lastLoc.accuracy,
+          ...(lastLoc ? { lat: lastLoc.lat, lng: lastLoc.lng, accuracy: lastLoc.accuracy } : {}),
+          ...(joinCode ? { joinCode } : {}),
           deviceId: await getDeviceId(),
           platform: tg.platform || "",
           ...(studentCode ? { studentCode } : {}),
@@ -190,6 +227,13 @@
         }),
       });
       const r = await res.json();
+      // Classroom class: get GPS now and ask again ("no_location" = older server version).
+      if ((r.code === "need_location" || r.code === "no_location") && !lastLoc) {
+        if (await locate()) return send(studentCode, confirmId);
+        return;
+      }
+      if (r.code === "need_code") return askJoinCode(r.title, r.message);
+      if (r.code === "wrong_code") { joinCode = null; return askJoinCode("Type the class code", "", r.message); }
       if (r.code === "need_id") return askStudentId(r.title, r.message);
       if (r.code === "confirm_id") {
         pendingCode = studentCode;
@@ -198,7 +242,7 @@
       if (r.code === "id_not_found") return askStudentId("Type your Student ID", "", r.message);
       const state = !r.ok ? "bad" : r.code === "late" ? "late" : "ok";
       show(state, r.title, r.message, r.name);
-      if (state === "bad" && ["closed", "taken", "id_taken", "device_taken", "no_session"].includes(r.code)) {
+      if (state === "bad" && ["closed", "taken", "id_taken", "device_taken", "no_session", "code_locked"].includes(r.code)) {
         $("retry").hidden = true;
       }
     } catch (e) {
@@ -206,24 +250,15 @@
     }
   }
 
+  // Ask without a location first: online classes don't need one. Classroom classes answer "need_location".
   async function run() {
-    show("loading", "Checking your location…", "Please wait a few seconds.");
+    show("loading", "Checking you in…", "Please wait a few seconds.");
     if (!tg.initData) {
       show("bad", "Open this from Telegram", "Tap the ✅ Check in button in your class group.");
       $("retry").hidden = true;
       return;
     }
-    try {
-      lastLoc = await getLocation();
-    } catch (e) {
-      if (e instanceof LocationDenied) {
-        show("bad", "Location is off", "Allow location for Telegram, then tap Try again.");
-        if (supports("8.0") && tg.LocationManager) $("settings").hidden = false;
-      } else {
-        show("bad", "Couldn't get your location", "Turn on GPS / location on your phone, then tap Try again.");
-      }
-      return;
-    }
+    lastLoc = null; // fresh GPS on every try
     await send(null);
   }
 
@@ -238,6 +273,18 @@
     send(code);
   };
   $("sid").oninput = () => { $("iderr").hidden = true; };
+  $("codeform").onsubmit = (e) => {
+    e.preventDefault();
+    const code = $("jcode").value.replace(/\D/g, "");
+    if (code.length !== 4) {
+      $("codeerr").hidden = false;
+      $("codeerr").textContent = "Type the 4 digits.";
+      return;
+    }
+    joinCode = code;
+    send(null);
+  };
+  $("jcode").oninput = () => { $("codeerr").hidden = true; };
   $("yes").onclick = () => send(pendingCode, true);
   $("no").onclick = () => {
     $("sid").value = "";
