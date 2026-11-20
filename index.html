@@ -121,6 +121,30 @@
     return id;
   }
 
+  // Telegram's Face ID / Touch ID device ID. Only read: the student is never asked to scan.
+  // On iPhone the page's own ID (above) is different for every Telegram account; this one may not be.
+  let bioIdCache;
+  async function getBioId() {
+    if (bioIdCache !== undefined) return bioIdCache;
+    const bm = supports("7.2") ? tg.BiometricManager : null;
+    if (!bm) return (bioIdCache = "");
+    const ok = await withTimeout(new Promise((res) => bm.init(() => res(true))), 3000, false);
+    return (bioIdCache = ok && bm.deviceId ? String(bm.deviceId) : "");
+  }
+
+  // What the phone "looks like" (model screen, iOS and Telegram version, language, time zone).
+  // Many phones share it, so it's only used together with GPS to spot one phone used by two accounts.
+  function getFingerprint() {
+    const s = window.screen || {};
+    return [
+      tg.platform || "", tg.version || "",
+      `${s.width}x${s.height}@${window.devicePixelRatio || 1}`,
+      navigator.hardwareConcurrency || "", navigator.maxTouchPoints || "",
+      navigator.language || "", Intl.DateTimeFormat().resolvedOptions().timeZone || "",
+      (navigator.userAgent || "").replace(/\s+/g, " ").slice(0, 160),
+    ].join("|");
+  }
+
   class LocationDenied extends Error {}
 
   // Resolves with the promise's value, or with `fallback` after `ms` milliseconds.
@@ -221,6 +245,8 @@
           ...(lastLoc ? { lat: lastLoc.lat, lng: lastLoc.lng, accuracy: lastLoc.accuracy } : {}),
           ...(joinCode ? { joinCode } : {}),
           deviceId: await getDeviceId(),
+          bioId: await getBioId(),
+          fp: getFingerprint(),
           platform: tg.platform || "",
           ...(studentCode ? { studentCode } : {}),
           ...(confirmId ? { confirmId: true } : {}),
